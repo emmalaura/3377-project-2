@@ -58,7 +58,7 @@ main(int argc, char** argv)
 uint32_t
 jenkins_one_at_a_time_hash(const uint8_t* key, uint64_t length)
 {
-  unint64_t i = 0;
+  uint64_t i = 0;
   uint32_t hash = 0;
 
   while (i != length) {
