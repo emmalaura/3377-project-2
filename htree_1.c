@@ -17,6 +17,7 @@ Mateo Estrada NetID: mxe210022
 #include <fcntl.h>
 #include <pthread.h>
 #include <time.h>
+#include <common.h>
 
 struct mThread{
     int start;
