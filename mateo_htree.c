@@ -15,6 +15,7 @@ Mateo Estrada NetID: mxe210022
 #include <stdbool.h>
 #include <string.h>
 #include <time.h>
+#include <sys/mman.h>
 #include "common_threads.h"
 #include "common.h"
 
@@ -27,6 +28,10 @@ void *child(void *);
 int num_threads = 0;
 int chunk_size = 0;
 int32_t fd = 0;
+char *buffer = NULL;
+uint64_t fileSize = 0;
+
+#define BSIZE 4096
 
 int main(int argc, char *argv[]) {
     // Input checking
@@ -50,24 +55,15 @@ int main(int argc, char *argv[]) {
 
     uint64_t fileSize = fileInfo.st_size;
 
-    // Allocate buffer to hold the entire file
-    char *buffer = (char *)malloc(fileSize);
-    if (buffer == NULL) {
-        perror("Memory allocation failure.");
-        exit(EXIT_FAILURE);
+    // Map file to memory
+    void* arr = mmap(NULL, fileSize, PROT_READ, MAP_PRIVATE, fd, 0);
+    if(arr == MAP_FAILED) {
+      perror("mmap failed.");
+      exit(EXIT_FAILURE);
     }
 
-    // Read the entire file into buffer
-    uint64_t nread = 0;
-    ssize_t n = 0;
-    while ((nread < fileSize) && ((n = read(fd, &buffer[nread], fileSize - nread)) > 0)) {
-        nread += n;
-    }
-
-    if (n < 0) {
-        perror("File read error.");
-        exit(EXIT_FAILURE);
-    }
+    // Set buffer to the mapped memory
+    buffer = (char *)arr;
 
     double start = GetTime();
 
@@ -88,6 +84,7 @@ int main(int argc, char *argv[]) {
     printf("time taken = %f\n", (end - start));
 
     // Clean up and close file
+    munmap(buffer, fileSize);
     close(fd);
 
     return EXIT_SUCCESS;
@@ -109,57 +106,46 @@ uint32_t jenkins_one_at_a_time_hash(const uint8_t *key, uint64_t length) {
 }
 
 void *child(void *ptr) {
-    uint32_t hash;
-    uint32_t n = (uint32_t)(uintptr_t)ptr;
-    pthread_t thread1, thread2;
+  uint32_t hash;
+  uint32_t n = (uint32_t)(uintptr_t)ptr;
+  pthread_t thread1, thread2;
 
-    bool child1 = false, child2 = false;
-    if (2 * n + 1 < num_threads) {
-        pthread_create(&thread1, NULL, child, (void *)(uintptr_t)(2 * n + 1));
-        child1 = true;
-        if (2 * n + 2 < num_threads) {
-            pthread_create(&thread2, NULL, child, (void *)(uintptr_t)(2 * n + 2));
-            child2 = true;
-        }
-    }
+  bool one_child= false, two_children = false;
+  if (2 * n + 1 < num_threads) {
+      pthread_create(&thread1, NULL, child, (void *)(uintptr_t)(2 * n + 1));
+      one_child = true;
+      if (2 * n + 2 < num_threads) {
+          pthread_create(&thread2, NULL, child, (void *)(uintptr_t)(2 * n + 2));
+          two_children = true;
+      }
+  }
 
-    // Allocate memory for chunk buffer
-    char *chunk_buf = malloc(chunk_size);
-    if (chunk_buf == NULL) {
-        perror("Memory allocation failure.");
-        exit(EXIT_FAILURE);
-    }
+  char temp_buffer[1000];
 
-    // Read chunk from file
-    pread(fd, chunk_buf, chunk_size, n * chunk_size);
+  hash = jenkins_one_at_a_time_hash((uint8_t *)&buffer[n * chunk_size], chunk_size);
 
-    // Calculate hash of the chunk
-    hash = jenkins_one_at_a_time_hash((uint8_t *)chunk_buf, chunk_size);
+  uint32_t ptr1, ptr2;
 
-    // Variables for storing hash pointers
-    uint32_t ptr1 = 0, ptr2 = 0;
-    char temp_buffer[100];
+  // Join child threads and concatenate hash values
+  if (one_child) {
+      pthread_join(thread1, (void *)&ptr1);
+  }
+  if (two_children) {
+      pthread_join(thread2, (void *)&ptr2);
+  }
 
-    // Join child threads and concatenate hash values
-    if (child1) {
-        pthread_join(thread1, (void *)&ptr1);
-    }
-    if (child2) {
-        pthread_join(thread2, (void *)&ptr2);
-    }
-
-    // Concatenate hash values and calculate hash of the concatenated string
-    if (child2) {
-        sprintf(temp_buffer, "%u%u%u", hash, ptr1, ptr2);
-        hash = jenkins_one_at_a_time_hash((uint8_t *)temp_buffer, strlen(temp_buffer));
-    } else if (child1) {
-        sprintf(temp_buffer, "%u%u", hash, ptr1);
-        hash = jenkins_one_at_a_time_hash((uint8_t *)temp_buffer, strlen(temp_buffer));
-    }
+  // Concatenate hash values and calculate hash of the concatenated string
+  if (two_children) {
+      sprintf(temp_buffer, "%u%u%u", hash, ptr1, ptr2);
+      hash = (uint32_t)jenkins_one_at_a_time_hash((uint8_t *)temp_buffer, strlen(temp_buffer));
+  } else if (one_child) {
+      sprintf(temp_buffer, "%u%u", hash, ptr1);
+      hash = jenkins_one_at_a_time_hash((uint8_t *)temp_buffer, strlen(temp_buffer));
+  }
 
 
-    // Exit the thread and return the hash value
-    return (void *)(uintptr_t)hash;
+  // Exit the thread and return the hash value
+  return (void *)(uintptr_t)hash;
 }
 
 void usage(char *s) {
